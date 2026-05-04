@@ -1,8 +1,8 @@
 import java.util.*;
 
 class Node {
-    public static final String ERROR_KEY = "Error: The key %d doesn't have value";
-    public static final String ERROR_SUCCESSOR = "Error: The node hasn't successor";
+    static final String ERROR_KEY = "Error: The key %d doesn't have value";
+    static final String ERROR_SUCCESSOR = "Error: The node hasn't successor";
     static final int REPLICATION_FACTOR = 3;
     static final int CURRENT_TIME_FACTOR = 5000;
     int id;
@@ -22,6 +22,9 @@ class Node {
         this.fingerTable = new ArrayList<>();
     }
 
+    /*
+     * Build the finger table and sort the nodes internally by their IDs
+     */
     void buildFingerTable(List<Node> allNodes) {
         fingerTable.clear();
 
@@ -34,6 +37,11 @@ class Node {
         fingerTable.sort(Comparator.comparingInt(n -> n.id));
     }
 
+    /*
+     * It looks for the node that follows it,
+     * and if there is no node ahead of it,
+     * it looks for it at the beginning of the ring
+     */
     Node findSuccessor(int key){
         if (successor == null) 
             throw new IllegalStateException(ERROR_SUCCESSOR);
@@ -49,6 +57,10 @@ class Node {
         }
     }
 
+    /*
+     *  Returns the nearest node preceding the key 
+     *  within the ring, using the finger table.
+     */
     Node closestPrecedingNode(int key) {
         for (int i = fingerTable.size() - 1; i >= 0; i--) {
             Node finger = fingerTable.get(i);
@@ -60,6 +72,11 @@ class Node {
         return this;
     }
 
+    /*
+     * Determines whether a key belongs
+     * to the circular interval (start, end]
+     * within the identifier ring.
+     */
     boolean inRange(int key, int start, int end) {
         if (start < end) {
             return key > start && key <= end;
@@ -68,6 +85,14 @@ class Node {
         }
     }
 
+    /*
+     * Inserts a (key, value) pair into the DHT.
+     * First, the node responsible for the key 
+     * is located using findSuccessor.
+     * Then, the value is stored in that node 
+     * and in a number of immediate successors 
+     * defined by REPLICATION_FACTOR.
+     */
     void put(int key, String value){
         Node responsible = findSuccessor(key);
         int replicas = REPLICATION_FACTOR;
@@ -82,6 +107,17 @@ class Node {
         }
     }
 
+    /*
+     * Retrieves the value associated with a key in the DHT.
+     * First, it checks the local cache. If the value exists
+     * and has not expired, it is returned directly.
+     * If not in the cache:
+     * If the current node is responsible for the key,
+     * it is searched for locally.
+     * Otherwise, the query is routed to the responsible node
+     * using findSuccessor.
+     * The result obtained is cached for a defined period of time.
+     */
     String get(int key){
         if (cache.containsKey(key)){
             CacheEntry entry = cache.get(key);
@@ -106,6 +142,13 @@ class Node {
         }
     }
 
+    /*
+     * Determines whether the current node is responsible for a key.
+     * A node is responsible for keys in the range [predecessor, this].
+     * This method uses circular logic to correctly handle the ring.
+     * If there is no predecessor (initial case), the node is considered
+     * responsible for all keys.
+     */
     boolean isResponsible(int key) {
     if (predecessor == null) return true;
 
@@ -116,6 +159,11 @@ class Node {
         }
     }
 
+    /*
+     * Determines whether a key belongs
+     * to the circular interval (start, end)
+     * within the identifier ring.
+     */
     boolean inOpenRange(int key, int start, int end) {
         if (start < end) {
             return key > start && key < end;
@@ -123,4 +171,4 @@ class Node {
             return key > start || key < end;
         }
     }
-}
+
