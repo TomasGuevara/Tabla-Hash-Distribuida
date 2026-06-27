@@ -1,9 +1,13 @@
+import java.math.BigInteger;
+
 class Finger {
-    int id;
+    BigInteger start;
+    BigInteger nodeId;
     int port;
 
-    public Finger(int id, int port) {
-        this.id = id;
+    public Finger(BigInteger start, BigInteger nodeId, int port) {
+        this.start = start;
+        this.nodeId = nodeId;
         this.port = port;
     }
 }
