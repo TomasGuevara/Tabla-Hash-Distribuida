@@ -1,3 +1,7 @@
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.math.BigInteger;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -12,28 +16,39 @@ public class Node {
 
     static final int CURRENT_TIME_FACTOR = 5000;
 
-    int id;
+    static final int M = 8;
+
+    BigInteger id;
     int port;
+    int fingerReviewed;
 
     int successorPort;
-    int successorId;
+    BigInteger successorId;
     int predecessorPort;
-    int predecessorId;
+    BigInteger predecessorId;
 
-    Map<Integer, String> data;
-    Map<Integer, CacheEntry> cache;
+    BigInteger ringSize = new BigInteger("256");
+    int pingNumber;
+
+    Map<BigInteger, String> data;
+    Map<BigInteger, CacheEntry> cache;
 
     List<Finger> fingerTable;
 
-    public Node(int id, int port) {
+    static ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-        this.id = id;
+    public Node(String host, int port) {
+
+        this.id = HashUtil.sha1(host+":"+port).mod(ringSize);
+	this.fingerTable = new ArrayList<>();
         this.port = port;
 
         this.successorPort = 0;
-	this.successorId = 0;
+	this.successorId = BigInteger.ZERO;
         this.predecessorPort = 0;
-        this.predecessorId = 0;
+        this.predecessorId = BigInteger.ZERO;
+	this.fingerReviewed = 0;
+	this.pingNumber = 0;
 
         this.data = new HashMap<>();
         this.cache = new HashMap<>();
@@ -94,8 +109,8 @@ public class Node {
                 int receivedPort =
                     Integer.parseInt(parts[1]);
 
-		int receivedId =
-                    Integer.parseInt(parts[2]);
+		BigInteger receivedId =
+                    new BigInteger(parts[2]);
 
                 String response =
                     getConnection(receivedPort, receivedId);
@@ -109,8 +124,8 @@ public class Node {
                 int receivedPort =
                     Integer.parseInt(parts[1]);
 
-		int receivedId =
-                    Integer.parseInt(parts[2]);
+		BigInteger receivedId =
+                    new BigInteger(parts[2]);
 
                 String response =
                     getChangeConnection(receivedPort, receivedId);
@@ -127,11 +142,11 @@ public class Node {
             // PUT
             else if (parts[0].equals("PUT")) {
 
-                int key = Integer.parseInt(parts[1]);
+                String key = parts[1];
 
                 String value = parts[2];
 
-		String response = put(key, value);
+		String response = put(key, value, false);
 
                 out.println(response);
             }
@@ -139,21 +154,63 @@ public class Node {
             // GET
             else if (parts[0].equals("GET")) {
 
-                int key = Integer.parseInt(parts[1]);
+                String key = parts[1];
 
                 String value = get(key, false);
 
                 out.println(value);
             }
 
-	    //PUTREPLICATION
+	    // PUTREPLICATION
 	    else if (parts[0].equals("PUTREPLICATION")){
-		int key = Integer.parseInt(parts[1]);
+		BigInteger key = new BigInteger(parts[1]);
 		
 		String value = parts[2];
 
                 data.put(key, value);
 	    }
+
+	    // FINDSUCCESSOR
+            else if (parts[0].equals("FINDSUCCESSOR")){
+		BigInteger key = new BigInteger(parts[1]);
+		
+		Finger value = findSuccessor(key);
+
+                out.println(value.start + "," + value.nodeId + "," + value.port); 
+	    }
+
+	    // UPDATEFINGER
+	    else if (parts[0].equals("UPDATEFINGER")) {
+
+                BigInteger sourceId = new BigInteger(parts[1]);
+
+                if (!sourceId.equals(this.id)) {
+
+                    buildFingerTable();
+
+                    sendUpdateFinger(this.successorPort, sourceId);
+                }
+            }
+
+	    // FINDNEXTSUCCESSOR
+            else if (parts[0].equals("FINDNEXTSUCCESSOR")) {
+
+		BigInteger givenPredecessorId = new BigInteger(parts[1]);
+
+                BigInteger givenId = new BigInteger(parts[2]);
+
+		int givenPort = Integer.parseInt(parts[3]);
+
+                String response = notify(givenPredecessorId, givenId, givenPort);
+
+                out.println(response);
+            }
+
+	    // PING
+	    else if (parts[0].equals("PING")) {
+
+                out.println("PONG");
+            }
 
             client.close();
 
@@ -166,7 +223,7 @@ public class Node {
     // CONNECTION
     // =========================
 
-    public String getConnection(int portReceived, int idReceived) {
+    public String getConnection(int portReceived, BigInteger idReceived) {
 
         if (this.successorPort == 0) {
 
@@ -180,17 +237,51 @@ public class Node {
 
             System.out.println(
                 "[NODE " + id + "] Connected with "
-                + successorPort
+                + this.successorPort
             );
 
             return 0 + "," + this.port + "," + this.id;
-
         } else {
 
-	    String value = sendChangeConnection(portReceived, idReceived);
+	    if (this.successorId.compareTo(idReceived) > 0 ||
+	        ((this.predecessorId.compareTo(idReceived) < 0) && (this.predecessorId.compareTo(this.id) > 0)) ||
+		((this.predecessorId.compareTo(idReceived) > 0) && this.id.compareTo(idReceived) > 0)){
 
-	    return value;
+	        String value = sendChangeConnection(portReceived, idReceived);
 
+	        return value;
+	    } else {
+
+                Finger closestPrecedingNode = closestPrecedingFinger(idReceived);
+		
+		try{
+
+		    Socket socket =
+                        new Socket("localhost", closestPrecedingNode.port);
+
+                    PrintWriter out = new PrintWriter(
+                        socket.getOutputStream(),
+                        true
+                    );
+
+                    BufferedReader in = new BufferedReader(
+                        new InputStreamReader(
+                            socket.getInputStream()
+                        )
+                    );
+
+                    out.println("GETCONNECTION " + portReceived + " " + idReceived);
+
+                    String response = in.readLine();
+
+		    socket.close();
+
+		    return response;
+		} catch (Exception e) {
+                
+		    return "Error";
+		}
+	    }
         }
     }
 
@@ -228,13 +319,13 @@ public class Node {
                         Integer.parseInt(parts[1]);
 
                     this.successorId =
-                        Integer.parseInt(parts[2]);
+                        new BigInteger(parts[2]);
 
                     this.predecessorPort =
                         Integer.parseInt(parts[1]);
 
                     this.predecessorId =
-                        Integer.parseInt(parts[2]);
+                        new BigInteger(parts[2]);
 
 		    System.out.println(
                         "[NODE " + id + "] Connected with "
@@ -246,16 +337,16 @@ public class Node {
                         Integer.parseInt(parts[3]);
 
                     this.successorId =
-                        Integer.parseInt(parts[4]);
+                        new BigInteger(parts[4]);
 
                     this.predecessorPort =
                         Integer.parseInt(parts[1]);
 
                     this.predecessorId =
-                        Integer.parseInt(parts[2]);
+                        new BigInteger(parts[2]);
 
 		    socket =
-                        new Socket("localhost", successorPort);
+                        new Socket("localhost", this.successorPort);
 
                     out = new PrintWriter(
                         socket.getOutputStream(),
@@ -267,7 +358,7 @@ public class Node {
                     socket.close();
 
                     socket =
-                        new Socket("localhost", predecessorPort);
+                        new Socket("localhost", this.predecessorPort);
 
                     out = new PrintWriter(
                         socket.getOutputStream(),
@@ -285,7 +376,10 @@ public class Node {
 
 		}
 
+		updateAllFingerTables();
+
             } catch (Exception e) {
+
                 e.printStackTrace();
             }
 
@@ -299,9 +393,9 @@ public class Node {
     // CHANGE CONNECTION
     // =========================
 
-    public String getChangeConnection(int portReceived, int idReceived) {
+    public String getChangeConnection(int portReceived, BigInteger idReceived) {
 
-        if (this.id > idReceived) {
+        if (this.id.compareTo(idReceived) > 0) {
 
             this.predecessorPort = portReceived;
 
@@ -330,10 +424,10 @@ public class Node {
         }
     }
 
-    public String sendChangeConnection(int port, int idReceived) {
+    public String sendChangeConnection(int port, BigInteger idReceived) {
 
         try {
-	    boolean isSuccessor = this.id < idReceived && this.successorId > idReceived;
+	    boolean isSuccessor = this.id.compareTo(idReceived) < 0 && this.successorId.compareTo(idReceived) > 0;
 
 	    Socket socket;
 
@@ -407,10 +501,10 @@ public class Node {
     // =========================
 
     public void changeKeyValue() {
-	Map<Integer, String> dumpData = new HashMap<>(data);
+	Map<BigInteger, String> dumpData = new HashMap<>(data);
 	data = new HashMap<>();
-        for (Map.Entry<Integer, String> entry : dumpData.entrySet()) {
-		put(entry.getKey(), entry.getValue());
+        for (Map.Entry<BigInteger, String> entry : dumpData.entrySet()) {
+		put(entry.getKey().toString(16), entry.getValue(), true);
 	}
     }
 
@@ -418,17 +512,27 @@ public class Node {
     // PUT
     // =========================
 
-    public String put(int key, String value) {
+    public String put(String stringKey, String value, boolean isHashed) {
+
+	BigInteger key = BigInteger.ZERO;
+
+	if(isHashed){
+
+	    key = new BigInteger(stringKey);
+	} else{
+
+	    key = HashUtil.sha1(stringKey).mod(ringSize);
+	}
 
         if (isResponsible(key)) {
 
             data.put(key, value);
 
-	    if (successorPort != 0 && successorPort != this.port){
+	    if (this.successorPort != 0 && this.successorPort != this.port){
                 
 		try {
 		    Socket socket =
-                        new Socket("localhost", successorPort);
+                        new Socket("localhost", this.successorPort);
 
                     PrintWriter out = new PrintWriter(
                         socket.getOutputStream(),
@@ -447,8 +551,12 @@ public class Node {
             return ("[NODE " + id + "] Stored key "+ key);
 
         } else {
+	
+	    Finger next = closestPrecedingFinger(key);
 
-            return sendPutNext(key, value);
+	    System.out.println("start:" + next.start + " node:" + next.nodeId + " port:" + next.port);
+
+            return sendPutNext(stringKey, value, next);
         }
     }
 
@@ -456,8 +564,10 @@ public class Node {
     // GET
     // =========================
 
-    public String get(int key, boolean isLocal) {
+    public String get(String stringKey, boolean isLocal) {
         // CACHE
+	BigInteger key = HashUtil.sha1(stringKey).mod(ringSize);
+	
         if (isLocal && cache.containsKey(key)) {
 
             CacheEntry entry = cache.get(key);
@@ -498,8 +608,10 @@ public class Node {
 
             Finger next = closestPrecedingFinger(key);
 
+	    System.out.println("start:" + next.start + " node:" + next.nodeId + " port:" + next.port);
+
             String value =
-                sendGetFinger(next.port, key);
+                sendGetFinger(next.port, stringKey);
 
             if (isLocal){
 	        cache.put(
@@ -520,21 +632,21 @@ public class Node {
     // RESPONSIBILITY
     // =========================
 
-    boolean isResponsible(int key) {
+    boolean isResponsible(BigInteger key) {
 
         if (predecessorPort == 0) {
             return true;
         }
 
-        if (predecessorId < id) {
+        if (predecessorId.compareTo(id) < 0) {
 
-            return key > predecessorId
-                && key <= id;
+            return key.compareTo(predecessorId) > 0
+                && key.compareTo(id) <= 0;
 
         } else {
 
-            return key > predecessorId
-                || key <= id;
+            return key.compareTo(predecessorId) > 0
+                || key.compareTo(id) <= 0;
         }
     }
 
@@ -542,7 +654,7 @@ public class Node {
     // FORWARD GET
     // =========================
 
-    String sendGetFinger(int port, int key) {
+    String sendGetFinger(int port, String key) {
 
         try {
 
@@ -578,34 +690,32 @@ public class Node {
     // CLOSEST PRECEDING FINGER
     // =========================
 
-    Finger closestPrecedingFinger(int key) {
-
-        if (fingerTable.isEmpty()) {
-            return new Finger(successorId, successorPort);
-        }
+    Finger closestPrecedingFinger(BigInteger key) {
 
         for (int i = fingerTable.size() - 1; i >= 0; i--) {
 
             Finger finger = fingerTable.get(i);
 
-            if (inRange(finger.id, this.id, key)) {
+            if (inRange(finger.nodeId, this.id, key)) {
                 return finger;
             }
         }
 
-        return new Finger(successorId, successorPort);
+	Finger successor = new Finger(key, this.successorId, this.successorPort);
+
+        return successor;
     }
 
     // =========================
     // FORWARD PUT
     // =========================
 
-    String sendPutNext(int key, String value) {
+    String sendPutNext(String key, String value, Finger next) {
 
         try {
 
             Socket socket =
-                new Socket("localhost", successorPort);
+                new Socket("localhost", next.port);
 
             PrintWriter out = new PrintWriter(
                 socket.getOutputStream(),
@@ -636,26 +746,331 @@ public class Node {
     // IN RANGE
     // =========================
 
-    boolean inRange(int key, int start, int end) {
-        if (start < end) {
+    boolean inRange(BigInteger key, BigInteger start, BigInteger end) {
+        if (start.compareTo(end) < 0) {
 
-            return key > start && key <= end;
+            return key.compareTo(start) > 0 && key.compareTo(end) < 0;
         } else {
 
-            return key > start || key <= end;
+            return key.compareTo(start) > 0 || key.compareTo(end) < 0;
         }
     }
 
+    // =========================
+    // FIND SUCCESSOR
+    // =========================
+
+    Finger findSuccessor(BigInteger key) {
+        if (isResponsible(key)) {
+
+            return new Finger(key, id, port);
+        }
+
+	Finger next = closestPrecedingFinger(key);
+
+	//System.out.println("[LOOKUP] " + id + " -> " + next.nodeId + " searching " + key);
+
+        return sendFindSuccessor(next.port, key);
+    }
+
+    Finger sendFindSuccessor(int port, BigInteger key){
+
+	try {
+
+	    Socket socket =
+                    new Socket("localhost", port);
+
+            PrintWriter out = new PrintWriter(
+                socket.getOutputStream(),
+                true
+            );
+	    
+	    BufferedReader in = new BufferedReader(
+                new InputStreamReader(
+                    socket.getInputStream()
+                )
+            );
+
+            out.println("FINDSUCCESSOR " + key);
+
+	    String response = in.readLine();
+
+            socket.close();
+
+	    String[] parts = response.split(",");
+
+            return new Finger(new BigInteger(parts[0]), new BigInteger(parts[1]), Integer.parseInt(parts[2]));
+
+	} catch (IOException e) {
+
+            return null;
+        }
+    }
+
+    void buildFingerTable() {
+
+        fingerTable.clear();
+
+        for (int i = 0; i < M; i++) {
+
+            BigInteger start = id.add(BigInteger.TWO.pow(i)).mod(ringSize);
+
+            Finger successor = findSuccessor(start);
+
+            fingerTable.add(new Finger(start, successor.nodeId, successor.port));
+        }
+    }
+
+    void printFingerTable(){
+
+	int index = 0;
+
+	System.out.println("Finger table for node: " + this.id);
+	
+	for (Finger fingerEntry : fingerTable){
+	    
+	    System.out.println("i=" + index + " start=" + fingerEntry.start + " -> " + fingerEntry.nodeId + " : " + fingerEntry.port);
+
+	    index ++;
+	}
+    }
+
+    void updateAllFingerTables() {
+        
+	buildFingerTable();
+
+        if (this.successorPort != port) {
+
+	    sendUpdateFinger(this.successorPort, this.id);
+        }
+    }
+
+    void sendUpdateFinger(int port, BigInteger sourceId) {
+
+        try {
+
+            Socket socket =
+                new Socket("localhost", port);
+
+            PrintWriter out =
+                new PrintWriter(
+                    socket.getOutputStream(),
+                    true
+            );
+
+            out.println("UPDATEFINGER " + sourceId);
+
+            socket.close();
+        } catch (Exception e) {
+        
+	    e.printStackTrace();
+        }
+    }
+
+    void fixFingers(){
+	
+	if(ping(this.successorPort)){
+
+            BigInteger start =
+                id.add(BigInteger.TWO.pow(fingerReviewed))
+                    .mod(ringSize);
+
+            Finger successor = findSuccessor(start);
+
+            fingerTable.set(
+                fingerReviewed,
+                new Finger(
+                    start,
+                    successor.nodeId,
+                    successor.port
+                )
+            );
+
+	    fingerReviewed = (fingerReviewed + 1) % M;
+	}
+    }
+
+    String notify(BigInteger givenPredecessorId, BigInteger givenId, int givenPort){
+
+	if((this.predecessorId.compareTo(givenPredecessorId) == 0) || (!ping(this.predecessorPort))){
+            
+	    this.predecessorId = givenId;
+
+	    this.predecessorPort = givenPort;
+
+            return this.id + "," + this.port;
+	} else if (ping(this.predecessorPort)){
+
+	    try {
+
+		Socket socket =
+                    new Socket("localhost", this.predecessorPort);
+ 
+                PrintWriter out = new PrintWriter(
+                    socket.getOutputStream(),
+                    true
+                );
+	    
+	        BufferedReader in = new BufferedReader(
+                    new InputStreamReader(
+                        socket.getInputStream()
+                    )
+                );
+
+                out.println("FINDNEXTSUCCESSOR " + this.successorId + " " + this.id + " " + this.port);
+
+	        String response = in.readLine();
+
+                socket.close();
+ 
+	        return response;
+	    } catch (Exception e){
+
+		return "Error";
+            }
+	}
+
+	return "Error doesn't found successor";
+    }
+
+    void stabilize(){
+
+	if (!ping(this.successorPort)) {
+
+	    if(this.pingNumber == 3){
+
+		Finger newSuccessor = fingerTable.get(0);
+
+		BigInteger idSearch = this.successorId;
+
+		boolean findSucesorFinger = true;
+
+		int index = 0;
+
+                while(findSucesorFinger && (index < M)){
+
+                    newSuccessor = fingerTable.get(index);
+
+		    index++;
+
+		    idSearch = newSuccessor.nodeId;
+
+                    findSucesorFinger = ((newSuccessor.port != this.successorPort) || (!ping(newSuccessor.port)));
+		}
+
+		if ((newSuccessor.port != this.successorPort) && ping(newSuccessor.port)){
+
+		    try {
+			
+		        Socket socket =
+                            new Socket("localhost", newSuccessor.port);
+
+                        PrintWriter out = new PrintWriter(
+                            socket.getOutputStream(),
+                            true
+                        );
+	    
+	                BufferedReader in = new BufferedReader(
+                            new InputStreamReader(
+                                socket.getInputStream()
+                            )
+                        );
+
+                        out.println("FINDNEXTSUCCESSOR " + this.successorId + " " + this.id + " " + this.port);
+
+	                String response = in.readLine();
+
+                        socket.close(); 
+
+		        String[] parts = response.split(",");
+
+		        this.successorId = 
+			    new BigInteger(parts[0]);
+
+                        this.successorPort =
+                            Integer.parseInt(parts[1]);
+
+                        buildFingerTable();
+		    } catch (Exception e) {
+
+                        System.out.println("Error in conection");
+                    }
+		} else {
+
+		    System.out.println("Error doesn't exist next node");
+		}
+
+		this.pingNumber = 0;
+	    } else{
+
+	        this.pingNumber++;
+	    }
+	} else {
+
+	    this.pingNumber = (this.pingNumber > 0) ? 0 : this.pingNumber;
+	}
+    }
+
+    boolean ping(int port) {
+
+        try {
+
+            Socket socket =
+                new Socket("localhost", port);
+
+            PrintWriter out =
+                new PrintWriter(
+                    socket.getOutputStream(),
+                    true
+            );
+
+            BufferedReader in =
+                new BufferedReader(
+                    new InputStreamReader(
+                        socket.getInputStream()
+                    )
+            );
+
+            out.println("PING");
+
+            String response = in.readLine();
+
+            socket.close();
+
+            return "PONG".equals(response);
+        } catch (Exception e) {
+
+            return false;
+        }
+    }
+
+    void occassionallyReviews(){
+	
+	if(this.predecessorPort != 0){
+	    fixFingers();
+
+            stabilize();
+	} 
+    }
+    
     // =========================
     // MAIN
     // =========================
 
     public static void main(String[] args) {
 
-        int id = Integer.parseInt(args[0]);
-        int port = Integer.parseInt(args[1]);
+	String parser = args[0];
+	String[] direccion = parser.split(":");
+        String host = direccion[0];
+        int port = Integer.parseInt(direccion[1]);
 
-        Node node = new Node(id, port);
+        Node node = new Node(host, port);
+
+	System.out.println("[NODE] Port=" + port);
+
+	System.out.println("[NODE] ID=" + host);
+
+	scheduler.scheduleAtFixedRate(() -> node.occassionallyReviews(), 0, 5, TimeUnit.SECONDS);
 
         new Thread(() -> node.startServer()).start();
 
@@ -677,18 +1092,18 @@ public class Node {
 
             else if (parts[0].equals("PUT")) {
 
-                int key = Integer.parseInt(parts[1]);
+                String key = parts[1]; 
 
                 String value = parts[2];
 
-                String response = node.put(key, value);
+                String response = node.put(key, value, false);
 
 		System.out.println(response);
             }
 
             else if (parts[0].equals("GET")) {
 
-                int key = Integer.parseInt(parts[1]);
+                String key = parts[1];
 
                 System.out.println(
                     "[RESULT] "
@@ -696,23 +1111,19 @@ public class Node {
                 );
             }
 
-	    else if (parts[0].equals("ADDFINGER")) {
+	    else if (parts[0].equals("PRINTFINGERTABLE")) {
 
-                int fingerId =
-                    Integer.parseInt(parts[1]);
+                node.printFingerTable();
+            }
 
-                int fingerPort =
-                    Integer.parseInt(parts[2]);
+            else if (parts[0].equals("PRINTSUCCESSOR")) {
 
-                node.fingerTable.add(
-                    new Finger(fingerId, fingerPort)
-                );
+                System.out.println(node.successorId.toString());
+            }
 
-                System.out.println(
-                    "[NODE " + node.id
-                    + "] Finger added: "
-                    + fingerId
-                );
+	    else if (parts[0].equals("PRINTPREDECESSOR")) {
+
+                System.out.println(node.predecessorId.toString());
             }
         }
     }
