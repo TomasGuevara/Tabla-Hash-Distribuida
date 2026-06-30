@@ -285,21 +285,18 @@ public class Node {
             return 0 + "," + this.port + "," + this.id;
         } else {
 
-	    if (this.successorId.compareTo(idReceived) > 0 ||
+	    if ((this.successorId.compareTo(idReceived) > 0) ||
 	        ((this.predecessorId.compareTo(idReceived) < 0) && (this.predecessorId.compareTo(this.id) > 0)) ||
-		((this.predecessorId.compareTo(idReceived) > 0) && this.id.compareTo(idReceived) > 0)){
+		((this.predecessorId.compareTo(idReceived) > 0) && (this.id.compareTo(idReceived) > 0))){
 
 	        String value = sendChangeConnection(portReceived, idReceived);
 
 	        return value;
 	    } else {
-
-                Finger closestPrecedingNode = closestPrecedingFinger(idReceived);
-		
 		try{
 
 		    Socket socket =
-                        new Socket("localhost", closestPrecedingNode.port);
+                        new Socket("localhost", this.successorPort);
 
                     PrintWriter out = new PrintWriter(
                         socket.getOutputStream(),
@@ -431,7 +428,7 @@ public class Node {
 
 		}
 
-		updateAllFingerTables();
+		buildFingerTable();
 
             } catch (Exception e) {
 
@@ -507,7 +504,8 @@ public class Node {
     public String sendChangeConnection(int port, BigInteger idReceived) {
 
         try {
-	    boolean isSuccessor = this.id.compareTo(idReceived) < 0 && this.successorId.compareTo(idReceived) > 0;
+	    boolean isSuccessor = (this.id.compareTo(idReceived) < 0 && this.successorId.compareTo(idReceived) > 0) || 
+		(this.id.compareTo(idReceived) > 0 && this.successorId.compareTo(this.id) < 0 && this.successorId.compareTo(idReceived) > 0);
 
 	    Socket socket;
 
