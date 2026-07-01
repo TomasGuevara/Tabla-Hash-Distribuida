@@ -188,6 +188,16 @@ public class Node {
 
                 String value = get(key, false);
 
+                String[] valueSplited = value.split(",");
+
+		if (valueSplited.length == 1){
+		
+		    value = (valueSplited[0] + "," + this.id);
+		} else {
+
+                    value = (valueSplited[0] + "," + this.id + " -> " + valueSplited[1]);
+		}
+
                 out.println(value);
             }
 
@@ -287,7 +297,8 @@ public class Node {
 
 	    if ((this.successorId.compareTo(idReceived) > 0) ||
 	        ((this.predecessorId.compareTo(idReceived) < 0) && (this.predecessorId.compareTo(this.id) > 0)) ||
-		((this.predecessorId.compareTo(idReceived) > 0) && (this.id.compareTo(idReceived) > 0))){
+		((this.predecessorId.compareTo(idReceived) > 0) && (this.id.compareTo(idReceived) > 0) && 
+		 !((this.successorId.compareTo(idReceived) < 0) && (this.successorId.compareTo(this.id) < 0)))){
 
 	        String value = sendChangeConnection(portReceived, idReceived);
 
@@ -337,107 +348,133 @@ public class Node {
      * @param port Port of any node already belonging
      *             to the Chord ring.
      */
-    public void sendConnection(int port) {
+    public void sendConnection(int port){
 
 	if (this.predecessorPort == 0) {
 
-            try {
+	    boolean thePortIsOk = false;
 
-                Socket socket =
-                    new Socket("localhost", port);
+	    int numberOfTries = 0;
 
-                PrintWriter out = new PrintWriter(
-                    socket.getOutputStream(),
-                    true
-                );
+	    while(numberOfTries < 4 && !thePortIsOk){
 
-                BufferedReader in = new BufferedReader(
-                    new InputStreamReader(
-                        socket.getInputStream()
-                    )
-                );
+                numberOfTries++;
 
-                out.println("GETCONNECTION " + this.port + " " + this.id);
+		thePortIsOk = ping(port);
 
-                String response = in.readLine();
-
-                String[] parts = response.split(",");
-
-		socket.close();
-
-	        if ("0".equals(parts[0])){
-
-		    this.successorPort =
-                        Integer.parseInt(parts[1]);
-
-                    this.successorId =
-                        new BigInteger(parts[2]);
-
-                    this.predecessorPort =
-                        Integer.parseInt(parts[1]);
-
-                    this.predecessorId =
-                        new BigInteger(parts[2]);
-
-		    System.out.println(
-                        "[NODE " + id + "] Connected with "
-                            + predecessorPort
-                    );
-	        } else {
+		if (!thePortIsOk) System.out.println(numberOfTries + "° attempt to connect on port: " + port + " failed");
 		
-		    this.successorPort =
-                        Integer.parseInt(parts[3]);
+		try{
 
-                    this.successorId =
-                        new BigInteger(parts[4]);
+		    Thread.sleep(5000);
+		} catch (InterruptedException e){
 
-                    this.predecessorPort =
-                        Integer.parseInt(parts[1]);
-
-                    this.predecessorId =
-                        new BigInteger(parts[2]);
-
-		    socket =
-                        new Socket("localhost", this.successorPort);
-
-                    out = new PrintWriter(
-                        socket.getOutputStream(),
-                        true
-                    );
-
-		    out.println("CHANGEKEYVALUE");
-
-                    socket.close();
-
-                    socket =
-                        new Socket("localhost", this.predecessorPort);
-
-                    out = new PrintWriter(
-                        socket.getOutputStream(),
-                        true
-                    );
-
-		    out.println("CHANGEKEYVALUE");
-
-                    socket.close();
-
-		    System.out.println(
-                        "[NODE " + id + "] Connected between Nodes "
-                            + parts[2] + " and " + parts[4]
-                    );
-
+		    Thread.currentThread().interrupt(); 
+                    
+		    break;
 		}
+	    }
 
-		buildFingerTable();
+	    if (thePortIsOk){
+                try {
 
-            } catch (Exception e) {
+                    Socket socket =
+                        new Socket("localhost", port);
 
-                e.printStackTrace();
-            }
+                    PrintWriter out = new PrintWriter(
+                        socket.getOutputStream(),
+                        true
+                    );
 
+                    BufferedReader in = new BufferedReader(
+                        new InputStreamReader(
+                            socket.getInputStream()
+                        )
+                    );
+
+                    out.println("GETCONNECTION " + this.port + " " + this.id);
+
+                    String response = in.readLine();
+
+                    String[] parts = response.split(",");
+
+		    socket.close();
+
+	            if ("0".equals(parts[0])){
+
+		        this.successorPort =
+                            Integer.parseInt(parts[1]);
+
+                        this.successorId =
+                            new BigInteger(parts[2]);
+
+                        this.predecessorPort =
+                            Integer.parseInt(parts[1]);
+
+                        this.predecessorId =
+                            new BigInteger(parts[2]);
+
+		        System.out.println(
+                            "[NODE " + id + "] Connected with "
+                                + predecessorPort
+                        );
+	            } else {
+		
+		        this.successorPort =
+                            Integer.parseInt(parts[3]);
+
+                        this.successorId =
+                            new BigInteger(parts[4]);
+
+                        this.predecessorPort =
+                            Integer.parseInt(parts[1]);
+
+                        this.predecessorId =
+                            new BigInteger(parts[2]);
+
+		        socket =
+                            new Socket("localhost", this.successorPort);
+
+                        out = new PrintWriter(
+                            socket.getOutputStream(),
+                            true
+                        );
+
+		        out.println("CHANGEKEYVALUE");
+
+                        socket.close();
+
+                        socket =
+                            new Socket("localhost", this.predecessorPort);
+
+                        out = new PrintWriter(
+                            socket.getOutputStream(),
+                            true
+                        );
+
+		        out.println("CHANGEKEYVALUE");
+
+                        socket.close();
+
+		        System.out.println(
+                            "[NODE " + id + "] Connected between Nodes "
+                                + parts[2] + " and " + parts[4]
+                        );
+
+		    }
+
+		    buildFingerTable();
+                } catch (Exception e) {
+
+                    e.printStackTrace();
+                }
+	    } else {
+
+		System.out.println("The connection on port: " + port + " be refused.");
+	    }
 	}else{
 
-	    System.out.println( "Error: node already has predecessor" );
+	    System.out.println( "Error: node already has conected." );
 	}
     }
 
@@ -740,10 +777,13 @@ public class Node {
                 sendGetFinger(next.port, stringKey);
 
             if (isLocal){
+               
+		String[] parts = value.split(",");
+
 	        cache.put(
                     key,
                     new CacheEntry(
-                        value,
+                        parts[0],
                         System.currentTimeMillis()
                         + CURRENT_TIME_FACTOR
                     )
@@ -1383,6 +1423,8 @@ public class Node {
 
 		if ((newSuccessor.port != this.successorPort) && ping(newSuccessor.port)){
 
+		    System.out.println("Error doesn't connect to successor: " + this.successorId + " 4° attempt");
+
 		    try {
 			
 		        Socket socket =
@@ -1414,6 +1456,8 @@ public class Node {
                             Integer.parseInt(parts[1]);
 
                         buildFingerTable();
+
+                        System.out.println("The new successor: " + this.successorId + " be connected");
 		    } catch (Exception e) {
 
                         System.out.println("Error in conection");
@@ -1427,6 +1471,8 @@ public class Node {
 	    } else{
 
 	        this.pingNumber++;
+
+		System.out.println("Error doesn't connect to successor: " + this.successorId + " " + pingNumber + "° attempt");
 	    }
 	} else {
 
@@ -1543,9 +1589,20 @@ public class Node {
 
                 String key = parts[1];
 
+		String result = node.get(key, true);
+
+                String[] resultSplited = result.split(",");
+
+		if (resultSplited.length > 1) {
+
+		    System.out.println("The path taken passed through the following nodes");
+
+		    System.out.println(resultSplited[1]);
+		}
+
                 System.out.println(
                     "[RESULT] "
-                    + node.get(key, true)
+                    + resultSplited[0]
                 );
             }
 
